@@ -1,0 +1,6 @@
+name: PlayerSize
+version: 1.0.0
+main: com.meows.playersize.PlayerSizePlugin
+api-version: 1.21
+author: Meows
+description: Плагин для изменения размера игроков (гномы)

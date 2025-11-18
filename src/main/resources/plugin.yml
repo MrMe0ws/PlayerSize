@@ -1,0 +1,23 @@
+name: PlayerSize
+version: ${project.version}
+main: com.meows.playersize.PlayerSizePlugin
+api-version: 1.21
+author: Meows
+description: Плагин для изменения размера игроков (гномы)
+
+commands:
+  playersize:
+    description: Команды плагина PlayerSize
+    usage: /<command> [reload|set|reset|check|list]
+    aliases: [psize, psz]
+
+permissions:
+  playersize.admin:
+    description: Полный доступ к командам плагина
+    default: op
+  playersize.check:
+    description: Право на просмотр размеров игроков
+    default: true
+  playersize.list:
+    description: Право на просмотр списка всех игроков
+    default: true
