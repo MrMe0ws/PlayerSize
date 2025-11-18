@@ -287,3 +287,9 @@ mvn clean package
 ## Лицензия
 
 Этот плагин создан для личного использования.
+
+
+## Заметки
+
+cd "C:\Users\Meows\Desktop\Projects\Minecraft Plugin\PlayerSize"; mvn clean compile
+cd "C:\Users\Meows\Desktop\Projects\Minecraft Plugin\PlayerSize"; mvn package
