@@ -1,17 +1,10 @@
 package com.meows.playersize;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-import com.google.gson.reflect.TypeToken;
-import org.bukkit.attribute.Attribute;
-import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
-import org.bukkit.configuration.file.FileConfiguration;
-import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -20,40 +13,36 @@ import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
 
-import java.io.*;
-import java.lang.reflect.Type;
-import java.nio.file.Files;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
 
 public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExecutor, TabCompleter {
 
-    private Config config;
-    private Map<UUID, Double> playerSizes; // UUID -> размер
-    private Map<UUID, String> playerNames; // UUID -> ник (для удобства редактирования)
-    private File dataFile;
-    private Gson gson;
+    private ConfigManager configManager;
+    private PlayerSizeManager playerSizeManager;
+    private SizePotionManager potionManager;
+    private CraftManager craftManager;
     private Random random;
 
     @Override
     public void onEnable() {
         // Инициализация
-        gson = new GsonBuilder().setPrettyPrinting().create();
         random = new Random();
-        playerSizes = new HashMap<>();
-        playerNames = new HashMap<>();
 
-        // Загрузка конфигурации
-        loadConfig();
+        // Инициализация менеджеров
+        configManager = new ConfigManager(this);
+        playerSizeManager = new PlayerSizeManager(this);
+        potionManager = new SizePotionManager(this);
+        craftManager = new CraftManager(this);
 
         // Загрузка данных игроков
-        dataFile = new File(getDataFolder(), "player_sizes.json");
-        loadPlayerSizes();
+        playerSizeManager.loadPlayerSizes();
 
         // Регистрация событий
         getServer().getPluginManager().registerEvents(this, this);
+        getServer().getPluginManager().registerEvents(potionManager, this);
+        getServer().getPluginManager().registerEvents(craftManager, this);
 
         // Регистрация команды
         getCommand("playersize").setExecutor(this);
@@ -65,64 +54,27 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
     @Override
     public void onDisable() {
         // Сохранение данных при выключении
-        savePlayerSizes();
+        if (playerSizeManager != null) {
+            playerSizeManager.savePlayerSizes();
+        }
         getLogger().info("Плагин PlayerSize выключен!");
     }
 
-    private void loadConfig() {
-        // Создаем папку если её нет
-        getDataFolder().mkdirs();
+    // Getters для доступа к менеджерам
+    public ConfigManager getConfigManager() {
+        return configManager;
+    }
 
-        // Загружаем или создаем конфиг
-        File configFile = new File(getDataFolder(), "config.yml");
-        if (!configFile.exists()) {
-            // Копируем дефолтный конфиг
-            saveResource("config.yml", false);
-        }
+    public PlayerSizeManager getPlayerSizeManager() {
+        return playerSizeManager;
+    }
 
-        // Загружаем YAML конфигурацию
-        FileConfiguration yamlConfig = YamlConfiguration.loadConfiguration(configFile);
+    public SizePotionManager getPotionManager() {
+        return potionManager;
+    }
 
-        // Инициализируем конфиг
-        config = new Config();
-
-        // Загружаем значения из YAML (getDouble/getBoolean вернет значение по
-        // умолчанию, если ключ отсутствует)
-        config.minSize = yamlConfig.getDouble("sizes.min-size", 0.75);
-        config.maxSize = yamlConfig.getDouble("sizes.max-size", 0.9);
-        config.defaultSize = yamlConfig.getDouble("sizes.default-size", 0.83);
-        config.useRandomSize = yamlConfig.getBoolean("sizes.use-random-size", true);
-
-        // Валидация конфига (разрешаем размеры от 0.1 до 2.0, включая 1.0 для
-        // нормального размера)
-        if (config.minSize < 0.1 || config.maxSize < 0.1 || config.defaultSize < 0.1) {
-            getLogger().warning(
-                    "Некорректные значения размера в конфиге (минимум 0.1)! Используются значения по умолчанию.");
-            config = new Config();
-        }
-
-        if (config.minSize > 2.0 || config.maxSize > 2.0 || config.defaultSize > 2.0) {
-            getLogger().warning(
-                    "Некорректные значения размера в конфиге (максимум 2.0)! Используются значения по умолчанию.");
-            config = new Config();
-        }
-
-        if (config.minSize > config.maxSize) {
-            getLogger().warning("min-size больше max-size! Меняю местами.");
-            double temp = config.minSize;
-            config.minSize = config.maxSize;
-            config.maxSize = temp;
-        }
-
-        // Проверяем, что defaultSize находится в допустимом диапазоне
-        if (config.defaultSize < config.minSize || config.defaultSize > config.maxSize) {
-            getLogger()
-                    .warning("default-size находится вне диапазона min-size..max-size! Устанавливаю среднее значение.");
-            config.defaultSize = (config.minSize + config.maxSize) / 2.0;
-        }
-
-        getLogger().info("Конфигурация загружена: minSize=" + config.minSize + ", maxSize=" + config.maxSize
-                + ", defaultSize=" + config.defaultSize + ", useRandomSize=" + config.useRandomSize);
+    public Random getRandom() {
+        return random;
     }
 
     @EventHandler
@@ -131,28 +83,29 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
         UUID uuid = player.getUniqueId();
 
         // Проверяем, есть ли уже сохраненный размер для игрока
-        Double savedSize = playerSizes.get(uuid);
+        Double savedSize = playerSizeManager.getPlayerSize(uuid);
 
         if (savedSize == null) {
             // Генерируем новый размер
-            if (config.useRandomSize) {
-                double newSize = config.minSize + (config.maxSize - config.minSize) * random.nextDouble();
+            if (configManager.isUseRandomSize()) {
+                double newSize = configManager.getMinSize()
+                        + (configManager.getMaxSize() - configManager.getMinSize()) * random.nextDouble();
                 // Округляем до 2 знаков после запятой
                 savedSize = Math.round(newSize * 100.0) / 100.0;
             } else {
-                savedSize = config.defaultSize;
+                savedSize = configManager.getDefaultSize();
             }
 
             // Сохраняем размер и ник
-            playerSizes.put(uuid, savedSize);
-            playerNames.put(uuid, player.getName());
-            savePlayerSizes();
+            playerSizeManager.setPlayerSize(uuid, savedSize);
+            playerSizeManager.setPlayerName(uuid, player.getName());
+            playerSizeManager.savePlayerSizes();
 
             getLogger().info("Новый размер для игрока " + player.getName() + ": " + savedSize);
         }
 
         // Обновляем ник игрока (на случай если он изменился)
-        playerNames.put(uuid, player.getName());
+        playerSizeManager.setPlayerName(uuid, player.getName());
 
         // Создаем финальную переменную для использования во внутреннем классе
         final Double finalSize = savedSize;
@@ -161,7 +114,8 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
         new BukkitRunnable() {
             @Override
             public void run() {
-                applySize(player, finalSize);
+                playerSizeManager.applySize(player, finalSize);
+                playerSizeManager.applyHealth(player, finalSize);
             }
         }.runTaskLater(this, 5L); // Задержка 5 тиков (0.25 секунды)
     }
@@ -171,127 +125,16 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
         Player player = event.getPlayer();
         UUID uuid = player.getUniqueId();
 
-        final Double savedSize = playerSizes.get(uuid);
+        final Double savedSize = playerSizeManager.getPlayerSize(uuid);
         if (savedSize != null) {
             // Применяем размер после респавна
             new BukkitRunnable() {
                 @Override
                 public void run() {
-                    applySize(player, savedSize);
+                    playerSizeManager.applySize(player, savedSize);
+                    playerSizeManager.applyHealth(player, savedSize);
                 }
             }.runTaskLater(this, 5L);
-        }
-    }
-
-    private void applySize(Player player, double size) {
-        try {
-            AttributeInstance scaleAttribute = player.getAttribute(Attribute.GENERIC_SCALE);
-            if (scaleAttribute != null) {
-                scaleAttribute.setBaseValue(size);
-                getLogger().info("Размер игрока " + player.getName() + " установлен на " + size);
-            } else {
-                getLogger().warning("Не удалось получить атрибут SCALE для игрока " + player.getName());
-            }
-        } catch (Exception e) {
-            getLogger().severe("Ошибка при установке размера для игрока " + player.getName() + ": " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
-
-    private void loadPlayerSizes() {
-        if (!dataFile.exists()) {
-            return;
-        }
-
-        try {
-            String json = new String(Files.readAllBytes(dataFile.toPath()));
-
-            // Пытаемся загрузить новую структуру (с объектами)
-            try {
-                Type type = new TypeToken<Map<String, PlayerSizeEntry>>() {
-                }.getType();
-                Map<String, PlayerSizeEntry> entryMap = gson.fromJson(json, type);
-
-                if (entryMap != null && !entryMap.isEmpty()) {
-                    playerSizes = new HashMap<>();
-                    playerNames = new HashMap<>();
-
-                    for (Map.Entry<String, PlayerSizeEntry> entry : entryMap.entrySet()) {
-                        try {
-                            UUID uuid = UUID.fromString(entry.getKey());
-                            PlayerSizeEntry sizeEntry = entry.getValue();
-
-                            // Поддерживаем новый формат (объект с size и name)
-                            if (sizeEntry != null) {
-                                if (sizeEntry.size != null) {
-                                    playerSizes.put(uuid, sizeEntry.size);
-                                }
-
-                                if (sizeEntry.name != null && !sizeEntry.name.isEmpty()) {
-                                    playerNames.put(uuid, sizeEntry.name);
-                                }
-                            }
-                        } catch (IllegalArgumentException e) {
-                            getLogger().warning("Некорректный UUID в данных: " + entry.getKey());
-                        }
-                    }
-                    getLogger().info("Загружено размеров игроков: " + playerSizes.size());
-                    return;
-                }
-            } catch (Exception e) {
-                // Если не получилось загрузить новую структуру, пробуем старую
-            }
-
-            // Загрузка старого формата (просто Map<String, Double>)
-            Type type = new TypeToken<Map<String, Double>>() {
-            }.getType();
-            Map<String, Double> stringMap = gson.fromJson(json, type);
-
-            if (stringMap != null) {
-                playerSizes = new HashMap<>();
-                playerNames = new HashMap<>();
-                for (Map.Entry<String, Double> entry : stringMap.entrySet()) {
-                    try {
-                        UUID uuid = UUID.fromString(entry.getKey());
-                        playerSizes.put(uuid, entry.getValue());
-                    } catch (IllegalArgumentException e) {
-                        getLogger().warning("Некорректный UUID в данных: " + entry.getKey());
-                    }
-                }
-                getLogger().info("Загружено размеров игроков (старый формат): " + playerSizes.size());
-            }
-        } catch (IOException e) {
-            getLogger().warning("Ошибка при загрузке данных игроков: " + e.getMessage());
-        }
-    }
-
-    private void savePlayerSizes() {
-        try {
-            if (!dataFile.getParentFile().exists()) {
-                dataFile.getParentFile().mkdirs();
-            }
-
-            // Конвертируем в новую структуру с никами
-            Map<String, PlayerSizeEntry> entryMap = new HashMap<>();
-            for (Map.Entry<UUID, Double> entry : playerSizes.entrySet()) {
-                UUID uuid = entry.getKey();
-                Double size = entry.getValue();
-                String name = playerNames.get(uuid);
-
-                PlayerSizeEntry sizeEntry = new PlayerSizeEntry();
-                sizeEntry.size = size;
-                sizeEntry.name = name != null ? name : "Unknown";
-
-                entryMap.put(uuid.toString(), sizeEntry);
-            }
-
-            String json = gson.toJson(entryMap);
-            Files.write(dataFile.toPath(), json.getBytes());
-
-            getLogger().info("Данные игроков сохранены: " + playerSizes.size() + " записей");
-        } catch (IOException e) {
-            getLogger().severe("Ошибка при сохранении данных игроков: " + e.getMessage());
-            e.printStackTrace();
         }
     }
 
@@ -314,7 +157,7 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
             case "check":
                 return handleCheck(sender, args);
             case "list":
-                return handleList(sender);
+                return handleList(sender, args);
             default:
                 sendHelp(sender);
                 return true;
@@ -325,9 +168,9 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
         sender.sendMessage("§6========== [PlayerSize] ==========");
         sender.sendMessage("§e/playersize reload §7- Перезагрузить конфиг (только админы)");
         sender.sendMessage("§e/playersize set <игрок> <размер> §7- Установить размер (только админы)");
-        sender.sendMessage("§e/playersize reset <игрок> §7- Сбросить размер (только админы)");
+        sender.sendMessage("§e/playersize reset <игрок|all> §7- Сбросить размер (только админы)");
         sender.sendMessage("§e/playersize check <игрок> §7- Показать размер игрока");
-        sender.sendMessage("§e/playersize list §7- Список всех игроков с размерами");
+        sender.sendMessage("§e/playersize list [страница] §7- Список игроков по росту");
         sender.sendMessage("§6================================");
     }
 
@@ -338,7 +181,15 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
         }
 
         try {
-            loadConfig();
+            configManager.loadConfig();
+            craftManager.loadRecipe(); // Перезагружаем рецепт зелья
+            // Применяем здоровье всем онлайн игрокам после перезагрузки конфига
+            for (Player onlinePlayer : Bukkit.getOnlinePlayers()) {
+                Double size = playerSizeManager.getPlayerSize(onlinePlayer.getUniqueId());
+                if (size != null) {
+                    playerSizeManager.applyHealth(onlinePlayer, size);
+                }
+            }
             sender.sendMessage("§a[PlayerSize] Конфигурация успешно перезагружена!");
             getLogger().info("Конфигурация перезагружена администратором: " + sender.getName());
         } catch (Exception e) {
@@ -378,19 +229,23 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
         try {
             double size = Double.parseDouble(args[2]);
 
-            // Валидация размера
-            if (size < 0.1 || size > 2.0) {
-                sender.sendMessage("§c[PlayerSize] Размер должен быть от 0.1 до 2.0!");
+            // Валидация размера (максимум в Minecraft = 5.0)
+            if (size < 0.1 || size > 5.0) {
+                sender.sendMessage("§c[PlayerSize] Размер должен быть от 0.1 до 5.0!");
                 return true;
             }
 
             UUID uuid = target.getUniqueId();
-            playerSizes.put(uuid, size);
-            playerNames.put(uuid, target.getName());
-            savePlayerSizes();
+            playerSizeManager.setPlayerSize(uuid, size);
+            playerSizeManager.setPlayerName(uuid, target.getName());
+            playerSizeManager.savePlayerSizes();
 
-            // Применяем размер
-            applySize(target, size);
+            // Применяем размер и здоровье
+            playerSizeManager.applySize(target, size);
+            playerSizeManager.applyHealth(target, size);
+
+            // Визуальные эффекты
+            potionManager.spawnPotionEffects(target);
 
             sender.sendMessage("§a[PlayerSize] Размер игрока §e" + target.getName() + " §aустановлен на §e" + size);
             target.sendMessage(
@@ -408,14 +263,14 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
         try {
             double size = Double.parseDouble(sizeStr);
 
-            if (size < 0.1 || size > 2.0) {
-                sender.sendMessage("§c[PlayerSize] Размер должен быть от 0.1 до 2.0!");
+            if (size < 0.1 || size > 5.0) {
+                sender.sendMessage("§c[PlayerSize] Размер должен быть от 0.1 до 5.0!");
                 return true;
             }
 
-            playerSizes.put(uuid, size);
-            playerNames.put(uuid, playerName);
-            savePlayerSizes();
+            playerSizeManager.setPlayerSize(uuid, size);
+            playerSizeManager.setPlayerName(uuid, playerName);
+            playerSizeManager.savePlayerSizes();
 
             sender.sendMessage("§a[PlayerSize] Размер игрока §e" + playerName + " §aустановлен на §e" + size);
             sender.sendMessage("§7Размер будет применен при следующем входе игрока на сервер.");
@@ -435,11 +290,17 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
         }
 
         if (args.length < 2) {
-            sender.sendMessage("§c[PlayerSize] Использование: §e/playersize reset <игрок>");
+            sender.sendMessage("§c[PlayerSize] Использование: §e/playersize reset <игрок|all>");
             return true;
         }
 
         String targetName = args[1];
+
+        // Обработка команды reset all
+        if (targetName.equalsIgnoreCase("all")) {
+            return resetAllPlayers(sender);
+        }
+
         Player target = Bukkit.getPlayer(targetName);
 
         if (target == null) {
@@ -455,19 +316,24 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
 
         // Генерируем новый размер или используем дефолтный
         double newSize;
-        if (config.useRandomSize) {
-            newSize = config.minSize + (config.maxSize - config.minSize) * random.nextDouble();
+        if (configManager.isUseRandomSize()) {
+            newSize = configManager.getMinSize()
+                    + (configManager.getMaxSize() - configManager.getMinSize()) * random.nextDouble();
             newSize = Math.round(newSize * 100.0) / 100.0;
         } else {
-            newSize = config.defaultSize;
+            newSize = configManager.getDefaultSize();
         }
 
-        playerSizes.put(uuid, newSize);
-        playerNames.put(uuid, target.getName());
-        savePlayerSizes();
+        playerSizeManager.setPlayerSize(uuid, newSize);
+        playerSizeManager.setPlayerName(uuid, target.getName());
+        playerSizeManager.savePlayerSizes();
 
-        // Применяем новый размер
-        applySize(target, newSize);
+        // Применяем новый размер и здоровье
+        playerSizeManager.applySize(target, newSize);
+        playerSizeManager.applyHealth(target, newSize);
+
+        // Визуальные эффекты
+        potionManager.spawnPotionEffects(target);
 
         sender.sendMessage(
                 "§a[PlayerSize] Размер игрока §e" + target.getName() + " §aсброшен и установлен на §e" + newSize);
@@ -478,18 +344,79 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
         return true;
     }
 
-    private boolean resetOfflinePlayerSize(CommandSender sender, UUID uuid, String playerName) {
-        double newSize;
-        if (config.useRandomSize) {
-            newSize = config.minSize + (config.maxSize - config.minSize) * random.nextDouble();
-            newSize = Math.round(newSize * 100.0) / 100.0;
-        } else {
-            newSize = config.defaultSize;
+    private boolean resetAllPlayers(CommandSender sender) {
+        Map<UUID, Double> allSizes = playerSizeManager.getAllPlayerSizes();
+        if (allSizes.isEmpty()) {
+            sender.sendMessage("§c[PlayerSize] Нет сохраненных размеров игроков для сброса.");
+            return true;
         }
 
-        playerSizes.put(uuid, newSize);
-        playerNames.put(uuid, playerName);
-        savePlayerSizes();
+        int onlineCount = 0;
+
+        // Создаем копию списка UUID для безопасной итерации
+        java.util.List<UUID> uuids = new java.util.ArrayList<>(allSizes.keySet());
+
+        for (UUID uuid : uuids) {
+            // Генерируем новый размер или используем дефолтный
+            double newSize;
+            if (configManager.isUseRandomSize()) {
+                newSize = configManager.getMinSize()
+                        + (configManager.getMaxSize() - configManager.getMinSize()) * random.nextDouble();
+                newSize = Math.round(newSize * 100.0) / 100.0;
+            } else {
+                newSize = configManager.getDefaultSize();
+            }
+
+            playerSizeManager.setPlayerSize(uuid, newSize);
+
+            // Обновляем ник, если игрок онлайн
+            Player player = Bukkit.getPlayer(uuid);
+            if (player != null) {
+                playerSizeManager.setPlayerName(uuid, player.getName());
+                onlineCount++;
+
+                // Применяем новый размер и здоровье онлайн игрокам
+                playerSizeManager.applySize(player, newSize);
+                playerSizeManager.applyHealth(player, newSize);
+            }
+        }
+
+        // Сохраняем изменения
+        playerSizeManager.savePlayerSizes();
+
+        sender.sendMessage("§a[PlayerSize] Размеры всех игроков сброшены!");
+        sender.sendMessage("§7Всего игроков: §e" + allSizes.size() + " §7(Онлайн: §e" + onlineCount + "§7)");
+
+        // Уведомляем онлайн игроков
+        for (UUID uuid : uuids) {
+            Player player = Bukkit.getPlayer(uuid);
+            if (player != null) {
+                Double newSize = playerSizeManager.getPlayerSize(uuid);
+                if (newSize != null) {
+                    player.sendMessage("§a[PlayerSize] Ваш размер был сброшен и установлен на §e" + newSize);
+                }
+            }
+        }
+
+        getLogger().info(
+                "Размеры всех игроков сброшены администратором " + sender.getName() + ". Всего: " + allSizes.size());
+
+        return true;
+    }
+
+    private boolean resetOfflinePlayerSize(CommandSender sender, UUID uuid, String playerName) {
+        double newSize;
+        if (configManager.isUseRandomSize()) {
+            newSize = configManager.getMinSize()
+                    + (configManager.getMaxSize() - configManager.getMinSize()) * random.nextDouble();
+            newSize = Math.round(newSize * 100.0) / 100.0;
+        } else {
+            newSize = configManager.getDefaultSize();
+        }
+
+        playerSizeManager.setPlayerSize(uuid, newSize);
+        playerSizeManager.setPlayerName(uuid, playerName);
+        playerSizeManager.savePlayerSizes();
 
         sender.sendMessage("§a[PlayerSize] Размер игрока §e" + playerName + " §aсброшен и установлен на §e" + newSize);
         sender.sendMessage("§7Размер будет применен при следующем входе игрока на сервер.");
@@ -515,12 +442,12 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
 
         if (target != null) {
             UUID uuid = target.getUniqueId();
-            Double size = playerSizes.get(uuid);
+            Double size = playerSizeManager.getPlayerSize(uuid);
 
             if (size != null) {
                 sender.sendMessage("§6[PlayerSize] §7Игрок: §e" + target.getName());
+                sender.sendMessage("§6[PlayerSize] §7Рост: §e" + String.format("%.2f", size * 1.8) + " блока");
                 sender.sendMessage("§6[PlayerSize] §7Размер: §e" + size);
-                sender.sendMessage("§6[PlayerSize] §7Рост: §e~" + String.format("%.2f", size * 1.8) + " блока");
             } else {
                 sender.sendMessage("§c[PlayerSize] У игрока §e" + target.getName() + " §cеще не установлен размер.");
             }
@@ -531,14 +458,13 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
                 return true;
             }
 
-            Double size = playerSizes.get(targetUuid);
-            String name = playerNames.get(targetUuid);
+            Double size = playerSizeManager.getPlayerSize(targetUuid);
+            String name = playerSizeManager.getPlayerName(targetUuid);
 
             if (size != null) {
                 sender.sendMessage("§6[PlayerSize] §7Игрок: §e" + (name != null ? name : targetName));
+                sender.sendMessage("§6[PlayerSize] §7Рост: §e" + String.format("%.2f", size * 1.8) + " блока");
                 sender.sendMessage("§6[PlayerSize] §7Размер: §e" + size);
-                sender.sendMessage("§6[PlayerSize] §7Рост: §e~" + String.format("%.2f", size * 1.8) + " блока");
-                sender.sendMessage("§7(Игрок оффлайн)");
             } else {
                 sender.sendMessage("§c[PlayerSize] У игрока §e" + targetName + " §cеще не установлен размер.");
             }
@@ -546,47 +472,111 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
         return true;
     }
 
-    private boolean handleList(CommandSender sender) {
+    private boolean handleList(CommandSender sender, String[] args) {
         if (!sender.hasPermission("playersize.list")) {
             sender.sendMessage("§cУ вас нет прав для использования этой команды!");
             return true;
         }
 
-        if (playerSizes.isEmpty()) {
+        Map<UUID, Double> allSizes = playerSizeManager.getAllPlayerSizes();
+        if (allSizes.isEmpty()) {
             sender.sendMessage("§c[PlayerSize] Нет сохраненных размеров игроков.");
             return true;
         }
 
-        sender.sendMessage("§6========== [PlayerSize] Список игроков ==========");
-        int count = 0;
-        for (Map.Entry<UUID, Double> entry : playerSizes.entrySet()) {
-            UUID uuid = entry.getKey();
-            Double size = entry.getValue();
-            String name = playerNames.get(uuid);
-
-            // Проверяем, онлайн ли игрок
-            Player onlinePlayer = Bukkit.getPlayer(uuid);
-            String status = onlinePlayer != null ? "§a[Онлайн]" : "§7[Оффлайн]";
-
-            sender.sendMessage(
-                    "§e" + (name != null ? name : uuid.toString()) + " §7- Размер: §e" + size + " §7" + status);
-            count++;
-
-            // Ограничиваем вывод до 20 записей за раз
-            if (count >= 20) {
-                sender.sendMessage("§7... и еще " + (playerSizes.size() - count) + " игроков");
-                break;
+        // Определяем номер страницы
+        int page = 1;
+        if (args.length > 1) {
+            try {
+                page = Integer.parseInt(args[1]);
+                if (page < 1) {
+                    page = 1;
+                }
+            } catch (NumberFormatException e) {
+                sender.sendMessage("§c[PlayerSize] Некорректный номер страницы: §e" + args[1]);
+                return true;
             }
         }
+
+        // Создаем список записей с ростом в блоках и сортируем от высокого к низкому
+        java.util.List<PlayerListEntry> entries = new java.util.ArrayList<>();
+        Map<UUID, String> allNames = playerSizeManager.getAllPlayerNames();
+        for (Map.Entry<UUID, Double> entry : allSizes.entrySet()) {
+            UUID uuid = entry.getKey();
+            Double size = entry.getValue();
+            String name = allNames.get(uuid);
+            double height = size * 1.8; // Рост в блоках
+
+            Player onlinePlayer = Bukkit.getPlayer(uuid);
+            boolean isOnline = onlinePlayer != null;
+
+            entries.add(new PlayerListEntry(
+                    name != null ? name : uuid.toString(),
+                    size,
+                    height,
+                    isOnline));
+        }
+
+        // Сортируем от высокого к низкому
+        entries.sort((a, b) -> Double.compare(b.height, a.height));
+
+        // Настройки пагинации
+        int itemsPerPage = 15;
+        int totalPages = (int) Math.ceil((double) entries.size() / itemsPerPage);
+
+        if (page > totalPages) {
+            sender.sendMessage(
+                    "§c[PlayerSize] Страница §e" + page + " §cне существует. Всего страниц: §e" + totalPages);
+            return true;
+        }
+
+        // Вычисляем диапазон для текущей страницы
+        int startIndex = (page - 1) * itemsPerPage;
+        int endIndex = Math.min(startIndex + itemsPerPage, entries.size());
+
+        // Выводим заголовок
+        sender.sendMessage("§6========== [PlayerSize] Список игроков ==========");
+        sender.sendMessage(
+                "§7Страница §e" + page + " §7из §e" + totalPages + " §7(Всего игроков: §e" + entries.size() + "§7)");
+        sender.sendMessage("");
+
+        // Выводим записи текущей страницы
+        for (int i = startIndex; i < endIndex; i++) {
+            PlayerListEntry entry = entries.get(i);
+            String heightStr = String.format("%.2f", entry.height);
+            sender.sendMessage("§e" + entry.name + " §7- Рост: §e" + heightStr + " блока");
+        }
+
+        sender.sendMessage("");
         sender.sendMessage("§6===============================================");
-        sender.sendMessage("§7Всего игроков: §e" + playerSizes.size());
+
+        // Подсказка о навигации
+        if (totalPages > 1) {
+            sender.sendMessage("§7Используйте §e/playersize list <номер> §7для перехода на другую страницу");
+        }
 
         return true;
     }
 
+    // Вспомогательный класс для сортировки списка
+    private static class PlayerListEntry {
+        String name;
+        double size;
+        double height;
+        boolean isOnline;
+
+        PlayerListEntry(String name, double size, double height, boolean isOnline) {
+            this.name = name;
+            this.size = size;
+            this.height = height;
+            this.isOnline = isOnline;
+        }
+    }
+
     private UUID findPlayerUUID(String name) {
         // Сначала ищем по нику в сохраненных данных
-        for (Map.Entry<UUID, String> entry : playerNames.entrySet()) {
+        Map<UUID, String> allNames = playerSizeManager.getAllPlayerNames();
+        for (Map.Entry<UUID, String> entry : allNames.entrySet()) {
             if (entry.getValue().equalsIgnoreCase(name)) {
                 return entry.getKey();
             }
@@ -623,7 +613,8 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
                     }
                 }
                 // Оффлайн игроки из базы
-                for (String name : playerNames.values()) {
+                Map<UUID, String> allNames = playerSizeManager.getAllPlayerNames();
+                for (String name : allNames.values()) {
                     if (name.toLowerCase().startsWith(args[1].toLowerCase()) && !completions.contains(name)) {
                         completions.add(name);
                     }
@@ -636,33 +627,16 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
             completions.add("0.83");
             completions.add("0.9");
             completions.add("1.0");
+        } else if (args.length == 2 && args[0].equalsIgnoreCase("list")) {
+            // Подсказки для номеров страниц
+            Map<UUID, Double> allSizes = playerSizeManager.getAllPlayerSizes();
+            int totalPages = (int) Math.ceil((double) allSizes.size() / 15.0);
+            for (int i = 1; i <= Math.min(totalPages, 10); i++) {
+                completions.add(String.valueOf(i));
+            }
         }
 
         return completions;
     }
 
-    // Класс для хранения данных игрока в JSON
-    private static class PlayerSizeEntry {
-        public Double size; // Размер игрока (может быть от 0.1 до 2.0, включая 1.0 для нормального размера)
-        public String name; // Ник игрока (для удобства редактирования вручную)
-    }
-
-    // Класс для конфигурации
-    public static class Config {
-        // Минимальный размер (1.0 = нормальный размер игрока ~1.8 блока)
-        // 0.75 = ~1.35 блока высоты (низкий гном)
-        public double minSize = 0.75;
-
-        // Максимальный размер
-        // 0.9 = ~1.62 блока высоты (высокий гном)
-        public double maxSize = 0.9;
-
-        // Фиксированный размер, если useRandomSize = false
-        // 0.83 = ~1.5 блока высоты (средний рост гнома)
-        public double defaultSize = 0.83;
-
-        // true = случайный размер от minSize до maxSize (для реализма)
-        // false = фиксированный defaultSize (все одинакового роста)
-        public boolean useRandomSize = true;
-    }
 }

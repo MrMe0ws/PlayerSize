@@ -2,8 +2,9 @@ name: PlayerSize
 version: ${project.version}
 main: com.meows.playersize.PlayerSizePlugin
 api-version: 1.21
-author: Meows
+author: MrMeows
 description: Плагин для изменения размера игроков (гномы)
+website: https://github.com/MrMe0ws
 
 commands:
   playersize:
