@@ -10,6 +10,7 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
 
@@ -158,6 +159,8 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
                 return handleCheck(sender, args);
             case "list":
                 return handleList(sender, args);
+            case "give":
+                return handleGive(sender, args);
             default:
                 sendHelp(sender);
                 return true;
@@ -171,6 +174,7 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
         sender.sendMessage("§e/playersize reset <игрок|all> §7- Сбросить размер (только админы)");
         sender.sendMessage("§e/playersize check <игрок> §7- Показать размер игрока");
         sender.sendMessage("§e/playersize list [страница] §7- Список игроков по росту");
+        sender.sendMessage("§e/playersize give potion <количество> §7- Выдать зелье роста (только админы)");
         sender.sendMessage("§6================================");
     }
 
@@ -573,6 +577,96 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
         }
     }
 
+    private boolean handleGive(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("playersize.admin") && !sender.isOp()) {
+            sender.sendMessage("§cУ вас нет прав для использования этой команды!");
+            return true;
+        }
+
+        if (args.length < 3) {
+            sender.sendMessage("§c[PlayerSize] Использование: §e/playersize give potion <количество>");
+            return true;
+        }
+
+        if (!args[1].equalsIgnoreCase("potion")) {
+            sender.sendMessage("§c[PlayerSize] Неизвестный предмет: §e" + args[1]);
+            sender.sendMessage("§7Доступные предметы: §epotion");
+            return true;
+        }
+
+        // Определяем целевого игрока
+        Player targetPlayer = null;
+        int amountIndex = 2;
+
+        // Проверяем, указан ли игрок (args[2] может быть именем игрока или количеством)
+        if (args.length >= 4) {
+            // Формат: /playersize give potion <игрок> <количество>
+            String targetName = args[2];
+            targetPlayer = Bukkit.getPlayer(targetName);
+            if (targetPlayer == null) {
+                sender.sendMessage("§c[PlayerSize] Игрок §e" + targetName + " §cне найден или не в сети!");
+                return true;
+            }
+            amountIndex = 3;
+        } else if (sender instanceof Player) {
+            // Если игрок не указан, выдаем тому, кто выполняет команду
+            targetPlayer = (Player) sender;
+        } else {
+            // Консоль должна указать игрока
+            sender.sendMessage("§c[PlayerSize] Использование: §e/playersize give potion <игрок> <количество>");
+            return true;
+        }
+
+        // Парсим количество
+        int amount;
+        try {
+            amount = Integer.parseInt(args[amountIndex]);
+            if (amount < 1) {
+                sender.sendMessage("§c[PlayerSize] Количество должно быть больше 0!");
+                return true;
+            }
+            if (amount > 64) {
+                sender.sendMessage("§c[PlayerSize] Максимальное количество: 64!");
+                return true;
+            }
+        } catch (NumberFormatException e) {
+            sender.sendMessage("§c[PlayerSize] Некорректное количество: §e" + args[amountIndex]);
+            return true;
+        }
+
+        // Проверяем, включено ли зелье в конфиге
+        if (!configManager.isPotionEnabled()) {
+            sender.sendMessage("§c[PlayerSize] Зелье роста отключено в конфигурации!");
+            return true;
+        }
+
+        // Создаем зелья и выдаем их
+        for (int i = 0; i < amount; i++) {
+            ItemStack potion = potionManager.createSizePotion();
+            if (targetPlayer.getInventory().firstEmpty() == -1) {
+                // Инвентарь полон, выкидываем на землю
+                targetPlayer.getWorld().dropItemNaturally(targetPlayer.getLocation(), potion);
+            } else {
+                targetPlayer.getInventory().addItem(potion);
+            }
+        }
+
+        // Сообщения
+        if (sender.equals(targetPlayer)) {
+            sender.sendMessage("§a[PlayerSize] Вам выдано §e" + amount + " §aзелий роста!");
+        } else {
+            sender.sendMessage("§a[PlayerSize] Игроку §e" + targetPlayer.getName() + " §aвыдано §e" + amount
+                    + " §aзелий роста!");
+            targetPlayer.sendMessage("§a[PlayerSize] Вам выдано §e" + amount + " §aзелий роста от §e"
+                    + sender.getName() + "§a!");
+        }
+
+        getLogger().info("Игроку " + targetPlayer.getName() + " выдано " + amount + " зелий роста администратором "
+                + sender.getName());
+
+        return true;
+    }
+
     private UUID findPlayerUUID(String name) {
         // Сначала ищем по нику в сохраненных данных
         Map<UUID, String> allNames = playerSizeManager.getAllPlayerNames();
@@ -602,8 +696,9 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
             completions.add("reset");
             completions.add("check");
             completions.add("list");
+            completions.add("give");
         } else if (args.length == 2) {
-            // Имена игроков для set, reset, check
+            // Имена игроков для set, reset, check, give
             String subCommand = args[0].toLowerCase();
             if (subCommand.equals("set") || subCommand.equals("reset") || subCommand.equals("check")) {
                 // Онлайн игроки
@@ -619,14 +714,47 @@ public class PlayerSizePlugin extends JavaPlugin implements Listener, CommandExe
                         completions.add(name);
                     }
                 }
+            } else if (subCommand.equals("give")) {
+                // Для команды give предлагаем "potion"
+                if ("potion".startsWith(args[1].toLowerCase())) {
+                    completions.add("potion");
+                }
             }
-        } else if (args.length == 3 && args[0].equalsIgnoreCase("set")) {
-            // Подсказки для размера
-            completions.add("0.5");
-            completions.add("0.75");
-            completions.add("0.83");
-            completions.add("0.9");
-            completions.add("1.0");
+        } else if (args.length == 3) {
+            if (args[0].equalsIgnoreCase("set")) {
+                // Подсказки для размера
+                completions.add("0.5");
+                completions.add("0.75");
+                completions.add("0.83");
+                completions.add("0.9");
+                completions.add("1.0");
+            } else if (args[0].equalsIgnoreCase("give") && args[1].equalsIgnoreCase("potion")) {
+                // Для команды give potion предлагаем имена игроков или количество
+                // Если отправитель - игрок, предлагаем количество, иначе имена игроков
+                if (sender instanceof Player) {
+                    completions.add("1");
+                    completions.add("5");
+                    completions.add("10");
+                    completions.add("16");
+                    completions.add("32");
+                    completions.add("64");
+                } else {
+                    // Консоль должна указать игрока
+                    for (Player player : Bukkit.getOnlinePlayers()) {
+                        if (player.getName().toLowerCase().startsWith(args[2].toLowerCase())) {
+                            completions.add(player.getName());
+                        }
+                    }
+                }
+            }
+        } else if (args.length == 4 && args[0].equalsIgnoreCase("give") && args[1].equalsIgnoreCase("potion")) {
+            // Количество для команды give potion <игрок> <количество>
+            completions.add("1");
+            completions.add("5");
+            completions.add("10");
+            completions.add("16");
+            completions.add("32");
+            completions.add("64");
         } else if (args.length == 2 && args[0].equalsIgnoreCase("list")) {
             // Подсказки для номеров страниц
             Map<UUID, Double> allSizes = playerSizeManager.getAllPlayerSizes();
